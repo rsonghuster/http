@@ -294,7 +294,12 @@ final class StreamingServer extends EventEmitter
                 $exception = new \RuntimeException($message, null, $previous);
 
                 $that->emit('error', array($exception));
-                return $that->writeError($conn, 500, $request);
+                //return $that->writeError($conn, 500, $request);
+                try {
+                    return $that->fcWriteError($conn, $error, $request);
+                } catch (Throwable $e) {
+                    return $that->writeError($conn, 500, $request);
+                }
             }
         );
     }
@@ -318,6 +323,53 @@ final class StreamingServer extends EventEmitter
             $body->write(': ' . $reason);
         }
 
+        $this->handleResponse($conn, $request, $response);
+    }
+    
+    /** @internal */
+    public function fcWriteError(ConnectionInterface $conn, $e, ServerRequestInterface $request) {
+        // filter out the server information in trace
+        $traceStr = $e->getTraceAsString();
+        $pos = strpos($traceStr, "/var/fc/runtime/php7/src/server.php");
+        $traceStr = substr($traceStr, 0, $pos);
+        $err = array(
+            "errorMessage" => $e->getMessage(),
+            "errorType" => get_class($e),
+            "stackTrace" => array(
+                "file" => $e->getFile(),
+                "line" => $e->getLine(),
+                "traceString" => $traceStr,
+            ),
+        );
+        
+        var_export($err);
+        if (ob_get_length()) ob_clean();
+        echo 'FC Invoke End RequestId: ' . $GLOBALS['requestId'] . PHP_EOL;
+        unset($GLOBALS['requestId']);
+        
+        $errStr = json_encode($err, JSON_UNESCAPED_UNICODE);
+        $response = new Response(
+            404,
+            array(
+                'Content-Type' => 'application/octet-stream',
+                'Content-Length' => strlen($errStr),
+                'Connection' => 'keep-alive',
+            ),
+            $errStr
+        );
+
+        // append reason phrase to response body if known
+        $reason = $response->getReasonPhrase();
+        if ($reason !== '') {
+            $body = $response->getBody();
+            $body->seek(0, SEEK_END);
+            $body->write(': ' . $reason);
+        }
+
+        if ($request === null) {
+            $request = new ServerRequest('GET', '/', array(), null, '1.1');
+        }
+		
         $this->handleResponse($conn, $request, $response);
     }
 
